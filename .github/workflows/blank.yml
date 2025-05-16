@@ -1,0 +1,92 @@
+name: Sync Multiple Repos Releases
+
+on:
+  schedule:
+    - cron: '30 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        persist-credentials: true
+
+    - name: 同步多仓库Release
+      id: sync_repos
+      run: |
+        # 仓库配置列表（格式：owner/repo:target_dir）
+        REPO_CONFIG=(
+          "vnt-dev/vnt:Releases/vnt"
+          "neovim/neovim:Releases/neovim"
+        )
+
+        needs_commit=false  # 初始化提交标记
+
+        for entry in "${REPO_CONFIG[@]}"; do
+          # 解析配置项
+          OWNER=$(cut -d/ -f1 <<< "${entry%%:*}")
+          REPO=$(cut -d/ -f2 <<< "${entry%%:*}")
+          TARGET_DIR="${entry#*:}"
+
+          echo "🔄 正在处理仓库: $OWNER/$REPO"
+          echo "📁 存储目录: $TARGET_DIR"
+
+          # 获取最新 Release 信息
+          API_RESPONSE=$(curl -s "https://api.github.com/repos/$OWNER/$REPO/releases/latest")
+          LATEST_TAG=$(jq -r '.tag_name' <<< "$API_RESPONSE")
+          
+          # 检查 API 响应有效性
+          if [[ "$LATEST_TAG" == "null" || -z "$LATEST_TAG" ]]; then
+            echo "❌ 无法获取最新 Release 信息，跳过该仓库"
+            continue
+          fi
+
+          # 检查本地存储的 tag
+          TAG_FILE="$TARGET_DIR/latest.tag"
+          mkdir -p "$TARGET_DIR"
+          CURRENT_TAG=$(cat "$TAG_FILE" 2>/dev/null || echo "")
+
+          if [[ "$CURRENT_TAG" == "$LATEST_TAG" ]]; then
+            echo "✅ 已是最新版本: $LATEST_TAG"
+            continue
+          fi
+
+          echo "🆕 检测到新版本: $LATEST_TAG (旧版本: ${CURRENT_TAG:-无})"
+
+          # 清理并下载新文件
+          rm -rf "${TARGET_DIR:?}/"*
+          jq -r '.assets[].browser_download_url' <<< "$API_RESPONSE" | while read url; do
+            echo "⬇️ 正在下载: $url"
+            wget -q -P "$TARGET_DIR" "$url"
+          done
+
+          # 更新版本记录
+          echo "$LATEST_TAG" > "$TAG_FILE"
+          needs_commit=true
+          echo "✔️ 成功更新到 $LATEST_TAG"
+        done
+
+        # 设置输出参数
+        echo "needs_commit=$needs_commit" >> $GITHUB_OUTPUT
+
+    - name: 提交变更
+      if: steps.sync_repos.outputs.needs_commit == 'true'
+      run: |
+        git config --global user.name "GitHub Actions Bot"
+        git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        
+        git add -A
+        if [ -n "$(git status --porcelain)" ]; then
+          git commit -m "chore: 同步多仓库最新Release [skip ci]"
+          git push origin main
+          echo "🚀 变更已提交"
+        else
+          echo "🔄 无实际变更需要提交"
+        fi
