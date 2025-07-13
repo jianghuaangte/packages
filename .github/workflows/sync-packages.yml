@@ -25,6 +25,7 @@ jobs:
         REPO_CONFIG=(
           "vnt-dev/vnt:Releases/vnt"
           "neovim/neovim:Releases/neovim"
+          "jianghuaangte/neovim-alpine:Releases/neovim-alpine"
         )
 
         needs_commit=false  # 初始化提交标记
